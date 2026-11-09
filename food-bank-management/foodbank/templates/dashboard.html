@@ -1,0 +1,6 @@
+{% extends "layout.html" %}
+{% block title %}{{ role|title }} dashboard | Food Bank Management{% endblock %}
+{% block content %}
+<h1>{{ role|title }} dashboard</h1>
+<p>Welcome, {{ g.user.name }}.</p>
+{% endblock %}
