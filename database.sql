@@ -6,10 +6,12 @@ CREATE TABLE IF NOT EXISTS users (
     name VARCHAR(100) NOT NULL,
     email VARCHAR(120) NOT NULL UNIQUE,
     password_hash CHAR(64) NOT NULL,
+    failed_attempts INT NOT NULL DEFAULT 0,
+    locked_until DATETIME NULL,
     role ENUM('Donor', 'Recipient', 'Volunteer', 'Coordinator') NOT NULL
 );
 
-INSERT INTO users (name, email, password_hash, role) VALUES
+INSERT IGNORE INTO users (name, email, password_hash, role) VALUES
     ('Inderpreet Kaur', 'donor1@test.com', SHA2('donorProject#123', 256), 'Donor'),
     ('Harmanpreet Kaur', 'donor2@test.com', SHA2('donorProject#123', 256), 'Donor'),
     ('Aadil Bhana', 'recipient1@test.com', SHA2('recipientProject#123', 256), 'Recipient'),

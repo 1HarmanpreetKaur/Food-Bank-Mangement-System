@@ -8,8 +8,15 @@ import java.sql.DriverManager;
 import java.sql.SQLException;
 import java.util.HashMap;
 import java.util.Locale;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class Login {
+    private static final String SESSION_COOKIE = "food_bank_session";
+
+    private static final ConcurrentHashMap<String, Account> SESSIONS =
+            new ConcurrentHashMap<>();
+        
     private static final String FORM = """
         <h1>Food Bank Login</h1>
         <form method="post" action="/">
@@ -31,6 +38,8 @@ public class Login {
     public static void main(String[] args) throws IOException {
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 8080), 0);
         server.createContext("/", Login::handleLogin);
+        server.createContext("/dashboard", Login::handleDashboard);
+        server.createContext("/logout", Login::handleLogout);
         server.start();
         System.out.println("Open http://127.0.0.1:8080");
     }
@@ -66,11 +75,22 @@ public class Login {
             String role = fields.getOrDefault("role", "");
             if (role.equals("Donor") || role.equals("Recipient")
                     || role.equals("Volunteer") || role.equals("Coordinator")) {
-                String account = findAccount(
+                Account account = authenticate(
                         fields.getOrDefault("email", "").strip().toLowerCase(Locale.ROOT),
                         fields.getOrDefault("password", ""), role);
+
                 if (account != null) {
-                    send(request, 200, "<p>Logged in as " + role + "</p>" + account);
+                    String oldToken = sessionToken(request);
+                    if (oldToken != null) {
+                        SESSIONS.remove(oldToken);
+                    }
+
+                    String token = UUID.randomUUID().toString();
+                    SESSIONS.put(token, account);
+                    request.getResponseHeaders().set(
+                            "Set-Cookie",
+                            SESSION_COOKIE + "=" + token + "; Path=/; HttpOnly; SameSite=Lax");
+                    redirect(request, "/dashboard");
                     return;
                 }
             }
@@ -84,32 +104,187 @@ public class Login {
         send(request, 200, "<p>Invalid email, password, or role.</p>" + FORM);
     }
 
-    private static String findAccount(String email, String password, String role) throws SQLException {
-        String sql = """
-            SELECT user_id, name, email, phone_number
-            FROM users
-            WHERE email = ? AND password_hash = SHA2(?, 256) AND role = ? AND status = 'Active'
-            """;
-        String user = System.getenv().getOrDefault("FOOD_BANK_DB_USER", "root");
-        String dbPassword = System.getenv().getOrDefault("FOOD_BANK_DB_PASSWORD", "");
-        try (var connection = DriverManager.getConnection(
-                "jdbc:mysql://127.0.0.1:3306/food_bank_login_demo", user, dbPassword);
-             var query = connection.prepareStatement(sql)) {
-            query.setString(1, email);
-            query.setString(2, password);
-            query.setString(3, role);
+    private static void handleDashboard(HttpExchange request) throws IOException {
+        if (!request.getRequestURI().getPath().equals("/dashboard")) {
+            send(request, 404, "Page not found.");
+            return;
+        }
 
-            int userId;
-            String profile;
-            try (var rows = query.executeQuery()) {
-                if (!rows.next()) {
-                    return null;
-                }
-                userId = rows.getInt("user_id");
-                profile = "<p>Name: " + escape(rows.getString("name"))
-                        + "<br>Email: " + escape(rows.getString("email"))
-                        + "<br>Phone: " + escape(rows.getString("phone_number")) + "</p>";
+        if (!request.getRequestMethod().equals("GET")) {
+            request.getResponseHeaders().set("Allow", "GET");
+            send(request, 405, "Method not allowed.");
+            return;
+        }
+
+        String token = sessionToken(request);
+        Account account = token == null ? null : SESSIONS.get(token);
+        if (account == null) {
+            redirect(request, "/");
+            return;
+        }
+
+        try {
+            String dashboard = buildDashboard(account.userId(), account.role());
+            send(request, 200, "<p>Logged in as " + account.role() + "</p>"
+                    + dashboard + """
+                    <form method="post" action="/logout">
+                      <button type="submit">Log out</button>
+                    </form>
+                    """);
+        } catch (SQLException error) {
+            System.err.println(error.getMessage());
+            send(request, 503, "<p>Could not load the dashboard. Check the terminal.</p>");
+        }
+    }
+
+    private static void handleLogout(HttpExchange request) throws IOException {
+        if (!request.getRequestURI().getPath().equals("/logout")) {
+            send(request, 404, "Page not found.");
+            return;
+        }
+
+        if (!request.getRequestMethod().equals("POST")) {
+            request.getResponseHeaders().set("Allow", "POST");
+            send(request, 405, "Method not allowed.");
+            return;
+        }
+
+        String token = sessionToken(request);
+        if (token != null) {
+            SESSIONS.remove(token);
+        }
+
+        request.getResponseHeaders().set(
+                "Set-Cookie",
+                SESSION_COOKIE + "=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax");
+        redirect(request, "/");
+    }
+
+    private static String sessionToken(HttpExchange request) {
+        String cookies = request.getRequestHeaders().getFirst("Cookie");
+        if (cookies == null) {
+            return null;
+        }
+
+        String prefix = SESSION_COOKIE + "=";
+        for (String cookie : cookies.split(";")) {
+            String value = cookie.strip();
+            if (value.startsWith(prefix)) {
+                return value.substring(prefix.length());
             }
+        }
+
+        return null;
+    }
+
+    private static void redirect(HttpExchange request, String location) throws IOException {
+        request.getResponseHeaders().set("Location", location);
+        request.getResponseHeaders().set("Cache-Control", "no-store");
+        request.sendResponseHeaders(303, -1);
+        request.close();
+    }    
+        private record Account(int userId, String role) {}
+
+    private static java.sql.Connection openDatabase() throws SQLException {
+        String user = System.getenv().getOrDefault("FOOD_BANK_DB_USER", "root");
+        String password = System.getenv().getOrDefault("FOOD_BANK_DB_PASSWORD", "");
+
+        return DriverManager.getConnection(
+                "jdbc:mysql://127.0.0.1:3306/food_bank_login_demo", user, password);
+    }
+
+    private static Account authenticate(String email, String password, String role)
+            throws SQLException {
+        String lookupSql = """
+            SELECT user_id, role, failed_attempts,
+                   locked_until > CURRENT_TIMESTAMP AS is_locked,
+                   locked_until IS NOT NULL AS had_lock,
+                   password_hash = SHA2(?, 256) AS password_matches
+            FROM users
+            WHERE email = ? AND status = 'Active'
+            FOR UPDATE
+            """;
+
+        String updateSql = """
+            UPDATE users
+            SET failed_attempts = ?,
+                locked_until = CASE
+                    WHEN ? >= 5 THEN DATE_ADD(CURRENT_TIMESTAMP, INTERVAL 15 MINUTE)
+                    ELSE NULL
+                END
+            WHERE user_id = ?
+            """;
+
+        try (var connection = openDatabase()) {
+            connection.setAutoCommit(false);
+
+            try {
+                int userId;
+                String databaseRole;
+                int previousFailures;
+                boolean validLogin;
+
+                try (var lookup = connection.prepareStatement(lookupSql)) {
+                    lookup.setString(1, password);
+                    lookup.setString(2, email);
+
+                    try (var rows = lookup.executeQuery()) {
+                        if (!rows.next() || rows.getBoolean("is_locked")) {
+                            connection.rollback();
+                            return null;
+                        }
+
+                        userId = rows.getInt("user_id");
+                        databaseRole = rows.getString("role");
+                        previousFailures = rows.getBoolean("had_lock")
+                                ? 0 : rows.getInt("failed_attempts");
+                        validLogin = rows.getBoolean("password_matches")
+                                && databaseRole.equals(role);
+                    }
+                }
+
+                int failedAttempts = validLogin ? 0 : previousFailures + 1;
+
+                try (var update = connection.prepareStatement(updateSql)) {
+                    update.setInt(1, failedAttempts);
+                    update.setInt(2, failedAttempts);
+                    update.setInt(3, userId);
+                    update.executeUpdate();
+                }
+
+                connection.commit();
+                return validLogin ? new Account(userId, databaseRole) : null;
+            } catch (SQLException error) {
+                connection.rollback();
+                throw error;
+            }
+        }
+    }
+
+    private static String buildDashboard(int userId, String role) throws SQLException {
+        String sql = """
+            SELECT name, email, phone_number
+            FROM users
+            WHERE user_id = ? AND status = 'Active'
+            """;
+
+        try (var connection = openDatabase()) {
+            String profile;
+
+            try (var query = connection.prepareStatement(sql)) {
+                query.setInt(1, userId);
+
+                try (var rows = query.executeQuery()) {
+                    if (!rows.next()) {
+                        return "<p>Account unavailable.</p>";
+                    }
+
+                    profile = "<p>Name: " + escape(rows.getString("name"))
+                            + "<br>Email: " + escape(rows.getString("email"))
+                            + "<br>Phone: " + escape(rows.getString("phone_number")) + "</p>";
+                }
+            }
+
 
             String heading;
             String recordsSql;
