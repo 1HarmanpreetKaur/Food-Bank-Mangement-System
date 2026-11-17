@@ -57,6 +57,7 @@ public class Login {
         server.createContext("/coordinator/recipients", Login::handleAccounts);
         InventoryPage.register(server);
         HamperPage.register(server);
+        AssignmentPage.register(server);
         server.start();
         System.out.println("Open http://127.0.0.1:8080");
     }
@@ -159,11 +160,13 @@ public class Login {
                 case "Volunteer" -> """
                         <p><a href="/volunteer/intake">Record a donation</a></p>
                         <p><a href="/volunteer/inventory">View inventory history</a></p>
+                        <p><a href="/volunteer/assignments">View my assignments</a></p>
                         """;
                 case "Coordinator" -> """
                         <p><a href="/coordinator/recipients">Review recipient registrations</a></p>
                         <p><a href="/coordinator/accounts">Manage user accounts</a></p>
                         <p><a href="/coordinator/categories">Manage inventory categories</a></p>
+                        <p><a href="/coordinator/assignments">Assign volunteers</a></p>
                         """;
                 default -> "";
             };
