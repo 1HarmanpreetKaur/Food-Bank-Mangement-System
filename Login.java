@@ -58,6 +58,7 @@ public class Login {
         InventoryPage.register(server);
         HamperPage.register(server);
         AssignmentPage.register(server);
+        DistributionPage.register(server);
         server.start();
         System.out.println("Open http://127.0.0.1:8080");
     }
@@ -156,11 +157,13 @@ public class Login {
                 case "Recipient" -> """
                         <p><a href="/profile">Edit my profile</a></p>
                         <p><a href="/recipient/hamper">Request a hamper and schedule pickup</a></p>
+                        <p><a href="/recipient/distributions">View my distribution history</a></p>
                         """;
                 case "Volunteer" -> """
                         <p><a href="/volunteer/intake">Record a donation</a></p>
                         <p><a href="/volunteer/inventory">View inventory history</a></p>
                         <p><a href="/volunteer/assignments">View my assignments</a></p>
+                        <p><a href="/volunteer/distributions">Manage pickups and distributions</a></p>
                         """;
                 case "Coordinator" -> """
                         <p><a href="/coordinator/recipients">Review recipient registrations</a></p>
