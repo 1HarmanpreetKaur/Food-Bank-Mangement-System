@@ -22,7 +22,7 @@ import java.util.concurrent.ConcurrentHashMap;
 public class Login {
     private static final String SESSION_COOKIE = "food_bank_session";
 
-    private static final ConcurrentHashMap<String, Account> SESSIONS =
+    static final ConcurrentHashMap<String, Account> SESSIONS =
             new ConcurrentHashMap<>();
         
     private static final String FORM = """
@@ -55,6 +55,8 @@ public class Login {
         server.createContext("/profile", Login::handleAccounts);
         server.createContext("/coordinator/accounts", Login::handleAccounts);
         server.createContext("/coordinator/recipients", Login::handleAccounts);
+        InventoryPage.register(server);
+        HamperPage.register(server);
         server.start();
         System.out.println("Open http://127.0.0.1:8080");
     }
@@ -146,10 +148,22 @@ public class Login {
                 return;
             }
             String links = switch (account.role()) {
-                case "Donor", "Recipient" -> "<p><a href='/profile'>Edit my profile</a></p>";
+                case "Donor" -> """
+                        <p><a href="/profile">Edit my profile</a></p>
+                        <p><a href="/donor/donations">Search my donations</a></p>
+                        """;
+                case "Recipient" -> """
+                        <p><a href="/profile">Edit my profile</a></p>
+                        <p><a href="/recipient/hamper">Request a hamper and schedule pickup</a></p>
+                        """;
+                case "Volunteer" -> """
+                        <p><a href="/volunteer/intake">Record a donation</a></p>
+                        <p><a href="/volunteer/inventory">View inventory history</a></p>
+                        """;
                 case "Coordinator" -> """
                         <p><a href="/coordinator/recipients">Review recipient registrations</a></p>
                         <p><a href="/coordinator/accounts">Manage user accounts</a></p>
+                        <p><a href="/coordinator/categories">Manage inventory categories</a></p>
                         """;
                 default -> "";
             };
@@ -188,7 +202,7 @@ public class Login {
         redirect(request, "/");
     }
 
-    private static String sessionToken(HttpExchange request) {
+    static String sessionToken(HttpExchange request) {
         String cookies = request.getRequestHeaders().getFirst("Cookie");
         if (cookies == null) {
             return null;
@@ -205,15 +219,15 @@ public class Login {
         return null;
     }
 
-    private static void redirect(HttpExchange request, String location) throws IOException {
+    static void redirect(HttpExchange request, String location) throws IOException {
         request.getResponseHeaders().set("Location", location);
         request.getResponseHeaders().set("Cache-Control", "no-store");
         request.sendResponseHeaders(303, -1);
         request.close();
     }    
-    private record Account(int userId, String role) {}
+    record Account(int userId, String role) {}
 
-    private static Connection openDatabase() throws SQLException {
+    static Connection openDatabase() throws SQLException {
         String user = System.getenv().getOrDefault("FOOD_BANK_DB_USER", "root");
         String password = System.getenv().getOrDefault("FOOD_BANK_DB_PASSWORD", "");
 
@@ -267,10 +281,10 @@ public class Login {
         }
     }
 
-    private record Profile(int id, String role, String name, String email, String phone,
+    record Profile(int id, String role, String name, String email, String phone,
             int householdSize, String dietary, String emergency, int volunteerId, String image) {}
 
-    private static final class FormError extends RuntimeException {
+    static final class FormError extends RuntimeException {
         FormError(String message) {
             super(message);
         }
@@ -375,7 +389,7 @@ public class Login {
         }
     }
 
-    private static String csrfToken(String sessionToken) {
+    static String csrfToken(String sessionToken) {
         try {
             var digest = java.security.MessageDigest.getInstance("SHA-256");
             return java.util.HexFormat.of().formatHex(digest.digest(
@@ -385,7 +399,7 @@ public class Login {
         }
     }
 
-    private static Map<String, String> readForm(HttpExchange request) throws IOException {
+    static Map<String, String> readForm(HttpExchange request) throws IOException {
         byte[] body = request.getRequestBody().readNBytes(16385);
         if (body.length > 16384) {
             throw new FormError("The submitted form is too large.");
@@ -397,7 +411,7 @@ public class Login {
         }
     }
 
-    private static Map<String, String> parseFields(String form) {
+    static Map<String, String> parseFields(String form) {
         var fields = new HashMap<String, String>();
         if (form != null) {
             for (String field : form.split("&")) {
@@ -411,11 +425,11 @@ public class Login {
         return fields;
     }
 
-    private static String value(Map<String, String> fields, String key) {
+    static String value(Map<String, String> fields, String key) {
         return fields.getOrDefault(key, "").strip();
     }
 
-    private static String required(Map<String, String> fields, String key, String label, int max) {
+    static String required(Map<String, String> fields, String key, String label, int max) {
         String value = value(fields, key);
         if (value.isEmpty() || value.length() > max) {
             throw new FormError(label + " is required and must be at most " + max + " characters.");
@@ -431,7 +445,7 @@ public class Login {
         return email;
     }
 
-    private static int positiveId(String input, String label) {
+    static int positiveId(String input, String label) {
         try {
             int number = Integer.parseInt(input);
             if (number > 0) {
@@ -443,20 +457,20 @@ public class Login {
         throw new FormError(label + " must be a positive whole number.");
     }
 
-    private static void bind(PreparedStatement statement, Object... values) throws SQLException {
+    static void bind(PreparedStatement statement, Object... values) throws SQLException {
         for (int i = 0; i < values.length; i++) {
             statement.setObject(i + 1, values[i]);
         }
     }
 
-    private static int update(Connection connection, String sql, Object... values) throws SQLException {
+    static int update(Connection connection, String sql, Object... values) throws SQLException {
         try (var statement = connection.prepareStatement(sql)) {
             bind(statement, values);
             return statement.executeUpdate();
         }
     }
 
-    private static void rollback(Connection connection, Exception error) {
+    static void rollback(Connection connection, Exception error) {
         try {
             connection.rollback();
         } catch (SQLException rollbackError) {
@@ -525,7 +539,7 @@ public class Login {
         }
     }
 
-    private static Profile readProfile(Connection connection, int userId) throws SQLException {
+    static Profile readProfile(Connection connection, int userId) throws SQLException {
         String sql = """
                 SELECT u.user_id, u.role, u.name, u.email, u.phone_number, r.household_size,
                        r.dietary_restrictions, r.emergency_contact, v.volunteer_id, v.profile_image
@@ -630,12 +644,12 @@ public class Login {
         }
     }
 
-    private static String field(String label, String key, String type, String value, String attributes) {
+    static String field(String label, String key, String type, String value, String attributes) {
         return "<p><label>" + label + " <input name='" + key + "' type='" + type + "' value='"
                 + escape(value) + "' " + attributes + "></label></p>";
     }
 
-    private static String hidden(String name, String value) {
+    static String hidden(String name, String value) {
         return "<input type='hidden' name='" + name + "' value='" + escape(value) + "'>";
     }
 
@@ -912,7 +926,7 @@ public class Login {
         }
     }
 
-    private static String escape(String value) {
+    static String escape(String value) {
         if (value == null) {
             return "";
         }
@@ -920,7 +934,7 @@ public class Login {
                 .replace("\"", "&quot;").replace("'", "&#39;");
     }
 
-    private static void send(HttpExchange request, int status, String content) throws IOException {
+    static void send(HttpExchange request, int status, String content) throws IOException {
         String page = "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
                 + "<title>Food Bank Login</title></head><body>" + content + "</body></html>";
         byte[] bytes = page.getBytes(StandardCharsets.UTF_8);
