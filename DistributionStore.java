@@ -168,6 +168,9 @@ final class DistributionStore {
             throw new Login.FormError("Delete the distribution before marking this pickup missed or delayed.");
         }
         setStatus(db, pickup, status);
+        if (!status.equals(pickup.status())) {
+            PickupAlerts.queue(db, pickup, status);
+        }
     }
 
     private static void setStatus(Connection db, Pickup pickup, String status) throws SQLException {

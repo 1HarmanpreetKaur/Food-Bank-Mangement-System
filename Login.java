@@ -61,6 +61,8 @@ public class Login {
         DistributionPage.register(server);
         server.start();
         AnalyzerEngine.start();
+        PickupAlerts.start();
+        EmailService.start();
         System.out.println("Open http://127.0.0.1:8080");
     }
 
