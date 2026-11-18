@@ -60,6 +60,7 @@ public class Login {
         AssignmentPage.register(server);
         DistributionPage.register(server);
         server.start();
+        AnalyzerEngine.start();
         System.out.println("Open http://127.0.0.1:8080");
     }
 
