@@ -59,6 +59,7 @@ public class Login {
         HamperPage.register(server);
         AssignmentPage.register(server);
         DistributionPage.register(server);
+        ReportPage.register(server);
         server.start();
         AnalyzerEngine.start();
         PickupAlerts.start();
@@ -173,6 +174,7 @@ public class Login {
                         <p><a href="/coordinator/accounts">Manage user accounts</a></p>
                         <p><a href="/coordinator/categories">Manage inventory categories</a></p>
                         <p><a href="/coordinator/assignments">Assign volunteers</a></p>
+                        <p><a href="/coordinator/reports">View reports</a></p>
                         """;
                 default -> "";
             };
