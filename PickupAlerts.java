@@ -81,6 +81,8 @@ final class PickupAlerts {
         if (!"Delayed".equals(status) && !"Missed".equals(status)) {
             return;
         }
+        Login.update(db, "INSERT IGNORE INTO pickup_status_events (pickup_id, status) VALUES (?, ?)",
+                pickup.id(), status);
         String message = "Pickup #%d for %s, scheduled for %s, was marked %s."
                 .formatted(pickup.id(), pickup.recipient(), pickup.scheduled().format(DISPLAY_TIME), status);
         Login.update(db, """

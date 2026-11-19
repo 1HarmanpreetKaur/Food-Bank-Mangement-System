@@ -164,6 +164,9 @@ final class DistributionStore {
         if (!status.equals("Fulfilled") && !status.equals("Missed") && !status.equals("Delayed")) {
             throw new Login.FormError("Choose Fulfilled, Missed, or Delayed.");
         }
+        if (previous == null && status.equals("Fulfilled")) {
+            throw new Login.FormError("Save the distribution and its items to fulfill this pickup.");
+        }
         if (previous != null && !status.equals("Fulfilled")) {
             throw new Login.FormError("Delete the distribution before marking this pickup missed or delayed.");
         }

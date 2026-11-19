@@ -123,7 +123,7 @@ final class DistributionPage {
                 JOIN pickups p ON p.pickup_id = ap.pickup_id
                 JOIN hamper_requests h ON h.request_id = p.request_id
                 JOIN recipients r ON r.recipient_id = h.recipient_id JOIN users u ON u.user_id = r.user_id
-                WHERE a.volunteer_id = ? AND a.status = 'Assigned'
+                WHERE a.volunteer_id = ? AND a.status = 'Assigned' AND p.status <> 'Cancelled'
                 ORDER BY p.scheduled_at, p.pickup_id
                 """)) {
             query.setInt(1, volunteer);
@@ -162,9 +162,11 @@ final class DistributionPage {
         }
 
         page.append(actionForm(id, "status", csrf)).append("<p><label>Pickup status <select name='status' required>")
-                .append("<option value=''>Select a status</option><option>Fulfilled</option>");
+                .append("<option value=''>Select a status</option>");
         if (previous == null) {
             page.append("<option>Missed</option><option>Delayed</option>");
+        } else {
+            page.append("<option>Fulfilled</option>");
         }
         page.append("</select></label> <button>Update status</button></p></form>");
 
@@ -330,13 +332,13 @@ final class DistributionPage {
         if (input.length() == 16) {
             try {
                 LocalDateTime value = LocalDateTime.parse(input);
-                if (value.getYear() >= 1000 && value.getYear() <= 9999) {
+                if (value.getYear() >= 1000 && value.getYear() <= 9999 && !value.isAfter(LocalDateTime.now())) {
                     return value;
                 }
             } catch (DateTimeParseException error) {
                 // Use the same message for all invalid dates.
             }
         }
-        throw new Login.FormError("Choose a valid distribution date and time.");
+        throw new Login.FormError("Choose a valid distribution date and time no later than now.");
     }
 }

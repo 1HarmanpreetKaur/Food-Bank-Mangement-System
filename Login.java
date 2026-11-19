@@ -60,6 +60,10 @@ public class Login {
         AssignmentPage.register(server);
         DistributionPage.register(server);
         ReportPage.register(server);
+        AlertPage.register(server);
+        FoodBankApi.register(server);
+        WebAssets.register(server);
+        server.setExecutor(java.util.concurrent.Executors.newFixedThreadPool(16));
         server.start();
         AnalyzerEngine.start();
         PickupAlerts.start();
@@ -166,6 +170,7 @@ public class Login {
                 case "Volunteer" -> """
                         <p><a href="/volunteer/intake">Record a donation</a></p>
                         <p><a href="/volunteer/inventory">View inventory history</a></p>
+                        <p><a href="/alerts">View alerts</a></p>
                         <p><a href="/volunteer/assignments">View my assignments</a></p>
                         <p><a href="/volunteer/distributions">Manage pickups and distributions</a></p>
                         """;
@@ -174,16 +179,31 @@ public class Login {
                         <p><a href="/coordinator/accounts">Manage user accounts</a></p>
                         <p><a href="/coordinator/categories">Manage inventory categories</a></p>
                         <p><a href="/coordinator/assignments">Assign volunteers</a></p>
+                        <p><a href="/alerts">View alerts</a></p>
                         <p><a href="/coordinator/reports">View reports</a></p>
                         """;
                 default -> "";
             };
-            send(request, 200, "<p>Logged in as " + account.role() + "</p>"
-                    + links + dashboard + """
-                    <form method="post" action="/logout">
-                      <button type="submit">Log out</button>
-                    </form>
-                    """);
+            send(request, 200, """
+                    <div class="dashboard-head">
+                      <div><h1>%s dashboard</h1><p>Logged in as %s</p></div>
+                      <form method="post" action="/logout"><button type="submit">Log out</button></form>
+                    </div>
+                    <div class="dashboard-grid">
+                      <section class="dashboard-panel">
+                        <h2>Tasks</h2>
+                        <nav class="task-links" aria-label="Your tasks">%s</nav>
+                      </section>
+                      <section class="dashboard-panel" data-activity>
+                        <div class="panel-head"><h2>Recent activity</h2><button type="button" data-refresh>Refresh</button></div>
+                        <p data-activity-status role="status"></p>
+                        <ul class="activity-list" data-activity-list></ul>
+                        <noscript><p>See your records below.</p></noscript>
+                      </section>
+                    </div>
+                    <details class="dashboard-details"><summary>Profile and records</summary>%s</details>
+                    <script src="/assets/dashboard.js" defer></script>
+                    """.formatted(account.role(), account.role(), links, dashboard));
         } catch (SQLException error) {
             System.err.println(error.getMessage());
             send(request, 503, "<p>Could not load the dashboard. Check the terminal.</p>");
@@ -296,6 +316,8 @@ public class Login {
             int householdSize, String dietary, String emergency, int volunteerId, String image) {}
 
     static final class FormError extends RuntimeException {
+        private static final long serialVersionUID = 1L;
+
         FormError(String message) {
             super(message);
         }
@@ -845,10 +867,41 @@ public class Login {
                 update(connection, "UPDATE users SET status = 'Deleted' WHERE user_id = ? AND status = 'Active'", id);
                 SESSIONS.entrySet().removeIf(entry -> entry.getValue().userId() == id);
             }
-            case "remove-availability" -> update(connection, """
-                    DELETE FROM volunteer_availability WHERE availability_id = ? AND volunteer_id = ?
-                    """, positiveId(value(fields, "availability_id"), "Availability ID"), target.volunteerId());
+            case "remove-availability" -> removeAvailability(connection, target.volunteerId(),
+                    positiveId(value(fields, "availability_id"), "Availability ID"));
             default -> throw new FormError("Select a valid account action.");
+        }
+    }
+
+    private static void removeAvailability(Connection db, int volunteerId, int availabilityId)
+            throws SQLException {
+        db.setAutoCommit(false);
+        try {
+            AssignmentPage.lockVolunteer(db, volunteerId);
+            update(db, "DELETE FROM volunteer_availability WHERE availability_id = ? AND volunteer_id = ?",
+                    availabilityId, volunteerId);
+            try (var query = db.prepareStatement("""
+                    SELECT 1 FROM volunteer_assignments a
+                    JOIN volunteer_assignment_windows w USING (assignment_id)
+                    WHERE a.volunteer_id = ? AND a.status = 'Assigned' AND w.shift_ends_at > CURRENT_TIMESTAMP
+                      AND NOT EXISTS (
+                          SELECT 1 FROM volunteer_availability v
+                          WHERE v.volunteer_id = a.volunteer_id AND v.available_date = DATE(a.shift_at)
+                            AND v.start_time <= TIME(a.shift_at) AND v.end_time >= TIME(w.shift_ends_at)
+                      )
+                    LIMIT 1
+                    """)) {
+                query.setInt(1, volunteerId);
+                try (var rows = query.executeQuery()) {
+                    if (rows.next()) {
+                        throw new FormError("Cancel the affected shift or add another covering time slot first.");
+                    }
+                }
+            }
+            db.commit();
+        } catch (SQLException | FormError error) {
+            rollback(db, error);
+            throw error;
         }
     }
 
@@ -914,7 +967,8 @@ public class Login {
                     heading = "Alerts";
                     recordsSql = """
                         SELECT CONCAT(alert_type, ' | ', message, ' | ', status)
-                        FROM alerts WHERE user_id = ? ORDER BY created_at DESC, alert_id
+                        FROM alerts a LEFT JOIN dismissed_alerts d USING (alert_id)
+                        WHERE user_id = ? AND d.alert_id IS NULL ORDER BY created_at DESC, a.alert_id
                         """;
                 }
                 default -> throw new IllegalArgumentException("Unknown role");
@@ -946,8 +1000,29 @@ public class Login {
     }
 
     static void send(HttpExchange request, int status, String content) throws IOException {
-        String page = "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
-                + "<title>Food Bank Login</title></head><body>" + content + "</body></html>";
+        String path = request.getRequestURI().getPath();
+        boolean signedIn = sessionToken(request) != null;
+        String navigation = signedIn ? "<a href='/dashboard'>Dashboard</a>" : "<a href='/'>Sign in</a>";
+        boolean loginPage = path.equals("/");
+        String mainClass = loginPage ? "signin" : path.equals("/dashboard") ? "workspace" : "surface";
+        String page = """
+                <!doctype html>
+                <html lang="en">
+                <head>
+                  <meta charset="utf-8">
+                  <meta name="viewport" content="width=device-width, initial-scale=1">
+                  <title>Food Bank Management System</title>
+                  <link rel="stylesheet" href="/assets/styles.css">
+                </head>
+                <body>
+                  <header class="topbar"><div class="topbar-inner">
+                    <a class="brand" href="%s"><span class="brand-mark" aria-hidden="true">FB</span>Food Bank Management System</a>
+                    %s
+                  </div></header>
+                  <main><div class="%s">%s</div></main>
+                </body>
+                </html>
+                """.formatted(signedIn ? "/dashboard" : "/", navigation, mainClass, content);
         byte[] bytes = page.getBytes(StandardCharsets.UTF_8);
         request.getResponseHeaders().set("Content-Type", "text/html; charset=utf-8");
         request.getResponseHeaders().set("Cache-Control", "no-store");

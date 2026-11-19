@@ -362,7 +362,7 @@ final class InventoryPage {
                     Login.update(db, "DELETE FROM inventory WHERE inventory_id = ?", stock.id());
                     Login.update(db, "DELETE FROM donations WHERE donation_id = ?", donationId);
                 }
-                case "waste" -> recordWaste(db, stock, form);
+                case "waste" -> recordWaste(db, stock, intake.donationDate(), form);
                 default -> throw new Login.FormError("Choose an inventory action.");
             }
             db.commit();
@@ -372,7 +372,7 @@ final class InventoryPage {
         }
     }
 
-    private static void recordWaste(Connection db, Stock stock, Map<String, String> form) throws SQLException {
+    private static void recordWaste(Connection db, Stock stock, LocalDate donationDate, Map<String, String> form) throws SQLException {
         int amount = Login.positiveId(Login.value(form, "amount"), "Waste quantity");
         LocalDate date = parseDate(Login.required(form, "waste_date", "Waste date", 10), "Waste date");
         if (amount > stock.quantity()) {
@@ -381,16 +381,18 @@ final class InventoryPage {
         if (date.isAfter(LocalDate.now())) {
             throw new Login.FormError("Waste date cannot be in the future.");
         }
-        if (stock.wasteDate() != null && !stock.wasteDate().equals(date)) {
-            throw new Login.FormError("This inventory record already has waste on another date.");
+        if (date.isBefore(donationDate)) {
+            throw new Login.FormError("Waste date cannot be before the donation date.");
         }
+        Login.update(db, "INSERT INTO inventory_waste_events (inventory_id, waste_date, quantity) VALUES (?, ?, ?)",
+                stock.id(), date, amount);
 
         int remaining = stock.quantity() - amount;
         String status = stockStatus(remaining, stock.expiry());
         Login.update(db, """
-            UPDATE inventory SET quantity = ?, status = ?, waste_date = ?, wasted_quantity = wasted_quantity + ?
+            UPDATE inventory SET quantity = ?, status = ?, waste_date = GREATEST(COALESCE(waste_date, ?), ?), wasted_quantity = wasted_quantity + ?
             WHERE inventory_id = ?
-            """, remaining, status, date, amount, stock.id());
+            """, remaining, status, date, date, amount, stock.id());
     }
 
     private static String stockStatus(int quantity, LocalDate expiry) {
@@ -498,7 +500,7 @@ final class InventoryPage {
         String unit = row.getString("unit");
         LocalDate wasteDate = row.getObject("waste_date", LocalDate.class);
         LocalDate expiry = row.getObject("expiry_date", LocalDate.class);
-        String waste = wasted == 0 ? "None" : wasted + " " + unit + " on " + dateText(wasteDate);
+        String waste = wasted == 0 ? "None" : wasted + " " + unit + " (latest " + dateText(wasteDate) + ")";
         boolean editable = !row.getBoolean("distributed") && wasted == 0 && donated == remaining;
         page.append("<tr>")
                 .append(cell(row.getString("item_name"))).append(cell(row.getString("category")))
@@ -517,7 +519,7 @@ final class InventoryPage {
                     .append(Login.field("Quantity", "amount", "number", "",
                             "required min='1' max='" + remaining + "'"))
                     .append(Login.field("Date", "waste_date", "date",
-                            wasteDate == null ? LocalDate.now().toString() : wasteDate.toString(), "required"))
+                            LocalDate.now().toString(), "required"))
                     .append("<button>Save waste</button></form></details>");
         }
         page.append("</td></tr>");

@@ -112,7 +112,8 @@ final class AssignmentPage {
                 .append(Login.field("Shift ends (local time)", "end", "datetime-local", "", "required"))
                 .append(Login.field("Task", "task", "text", "", "required maxlength='255'"))
                 .append("<fieldset><legend>Pickups covered by this shift (optional)</legend>")
-                .append("<p>Select pickups that fall within the shift. Leave them blank for a general task.</p>");
+                .append("<p>Select pickups that fall within the shift. Leave them blank for a general task.</p>")
+                .append("<p><label><input type='checkbox' name='distribution_shift' value='1'> Include this shift in expiry alerts even without linked pickups</label></p>");
         try (var statement = db.prepareStatement("""
                 SELECT p.pickup_id, p.scheduled_at, u.name
                 FROM pickups p JOIN hamper_requests h ON h.request_id = p.request_id
@@ -259,6 +260,9 @@ final class AssignmentPage {
 
             int id = insertAssignment(db, volunteer, task, start, now);
             Login.update(db, "INSERT INTO volunteer_assignment_windows VALUES (?, ?)", id, end);
+            if ("1".equals(Login.value(form, "distribution_shift"))) {
+                Login.update(db, "INSERT INTO expiry_distribution_shifts (assignment_id) VALUES (?)", id);
+            }
             for (int pickup : pickups) {
                 Login.update(db, "INSERT INTO volunteer_assignment_pickups VALUES (?, ?)", id, pickup);
             }
@@ -292,7 +296,7 @@ final class AssignmentPage {
         throw new Login.FormError(label + " must be a valid local date and time.");
     }
 
-    private static void lockVolunteer(Connection db, int volunteer) throws SQLException {
+    static void lockVolunteer(Connection db, int volunteer) throws SQLException {
         try (var statement = db.prepareStatement("""
                 SELECT v.volunteer_id FROM volunteers v JOIN users u ON u.user_id = v.user_id
                 WHERE v.volunteer_id = ? AND u.role = 'Volunteer' AND u.status = 'Active' FOR UPDATE

@@ -27,6 +27,7 @@ final class AnalyzerEngine {
     private record Batch(int id, String name, String unit, int quantity, LocalDate expiry) {}
     private record History(long hamperCount, Map<Item, Long> quantities) {}
     private record UpcomingPickup(LocalDate date, Set<Integer> volunteerIds) {}
+    private record DistributionShift(LocalDate date, int userId) {}
     private record Risk(Batch batch, int quantity, String reason) {}
 
     static void start() {
@@ -61,9 +62,11 @@ final class AnalyzerEngine {
             List<UpcomingPickup> pickups = readUpcomingPickups(db, now,
                     batches.get(batches.size() - 1).expiry());
             Set<Integer> coordinators = readCoordinatorIds(db);
+            List<DistributionShift> shifts = readDistributionShifts(db, now,
+                    batches.get(batches.size() - 1).expiry());
             int alerts = 0;
             for (Risk risk : identifyStockTrend(batches, history, pickups)) {
-                alerts += saveAlerts(db, risk, recipientsFor(risk, coordinators, pickups));
+                alerts += saveAlerts(db, risk, recipientsFor(risk, coordinators, pickups, shifts));
             }
             db.commit();
             return alerts;
@@ -212,14 +215,43 @@ final class AnalyzerEngine {
         return ids;
     }
 
+    private static List<DistributionShift> readDistributionShifts(Connection db, LocalDateTime now,
+                                                                  LocalDate lastExpiry) throws SQLException {
+        var shifts = new ArrayList<DistributionShift>();
+        try (var query = db.prepareStatement("""
+                SELECT DATE(a.shift_at) AS shift_date, u.user_id
+                FROM expiry_distribution_shifts s
+                JOIN volunteer_assignments a USING (assignment_id)
+                JOIN volunteer_assignment_windows w USING (assignment_id)
+                JOIN volunteers v ON v.volunteer_id = a.volunteer_id
+                JOIN users u ON u.user_id = v.user_id
+                WHERE a.status = 'Assigned' AND u.status = 'Active'
+                  AND w.shift_ends_at > ? AND a.shift_at < ?
+                """)) {
+            Login.bind(query, now, lastExpiry.plusDays(1).atStartOfDay());
+            try (var rows = query.executeQuery()) {
+                while (rows.next()) {
+                    shifts.add(new DistributionShift(rows.getObject("shift_date", LocalDate.class),
+                            rows.getInt("user_id")));
+                }
+            }
+        }
+        return shifts;
+    }
+
     private static Set<Integer> recipientsFor(Risk risk, Set<Integer> coordinators,
-                                              List<UpcomingPickup> pickups) {
+                                              List<UpcomingPickup> pickups, List<DistributionShift> shifts) {
         Set<Integer> recipients = new LinkedHashSet<>(coordinators);
         for (UpcomingPickup pickup : pickups) {
             if (pickup.date().isAfter(risk.batch().expiry())) {
                 break;
             }
             recipients.addAll(pickup.volunteerIds());
+        }
+        for (DistributionShift shift : shifts) {
+            if (!shift.date().isAfter(risk.batch().expiry())) {
+                recipients.add(shift.userId());
+            }
         }
         return recipients;
     }

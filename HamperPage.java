@@ -47,6 +47,11 @@ final class HamperPage {
                     Login.send(request, 403, "<p>Reopen the hamper request form and try again.</p>");
                     return;
                 }
+                if ("cancel".equals(Login.value(fields, "action"))) {
+                    cancel(db, account.userId(), Login.positiveId(Login.value(fields, "pickup"), "Pickup"));
+                    Login.redirect(request, PATH + "?cancelled=1");
+                    return;
+                }
                 if (schedule(db, account.userId(), Login.value(fields, "pickup_at"))) {
                     Login.redirect(request, PATH + "?scheduled=1");
                     return;
@@ -63,12 +68,16 @@ final class HamperPage {
 
             String notice = "scheduled=1".equals(request.getRequestURI().getRawQuery())
                     ? "<p>Hamper requested and pickup scheduled. Check your dashboard for details.</p>" : "";
+            if ("cancelled=1".equals(request.getRequestURI().getRawQuery())) {
+                notice = "<p>Pickup cancelled.</p>";
+            }
             Login.send(request, 200, "<h1>Request a hamper</h1>" + notice
                     + "<p><a href='/dashboard'>Back to dashboard</a></p>"
                     + "<form method='post' action='" + PATH + "'>"
                     + Login.hidden("csrf", csrf)
                     + Login.field("Pickup date and time (local time)", "pickup_at", "datetime-local", "", "required")
-                    + "<button>Request hamper and schedule pickup</button></form>");
+                    + "<button>Request hamper and schedule pickup</button></form>"
+                    + upcoming(db, recipient.id(), csrf));
         } catch (Login.FormError error) {
             Login.send(request, 400, "<p>" + Login.escape(error.getMessage()) + "</p>"
                     + "<p><a href='" + PATH + "'>Back to hamper request</a></p>");
@@ -111,6 +120,53 @@ final class HamperPage {
                 return rows.next() ? new Recipient(rows.getInt("recipient_id"), rows.getString("approval_status"))
                         : null;
             }
+        }
+    }
+
+    private static String upcoming(Connection db, int recipientId, String csrf) throws SQLException {
+        var page = new StringBuilder("<h2>Upcoming pickups</h2><ul>");
+        try (var query = db.prepareStatement("""
+                SELECT p.pickup_id, p.scheduled_at FROM pickups p
+                JOIN hamper_requests h USING (request_id)
+                WHERE h.recipient_id = ? AND h.status = 'Scheduled' AND p.status = 'Pending'
+                  AND p.scheduled_at > CURRENT_TIMESTAMP ORDER BY p.scheduled_at
+                """)) {
+            query.setInt(1, recipientId);
+            try (var rows = query.executeQuery()) {
+                if (!rows.isBeforeFirst()) {
+                    page.append("<li>No upcoming pickups.</li>");
+                }
+                while (rows.next()) {
+                    int id = rows.getInt("pickup_id");
+                    page.append("<li>").append(Login.escape(rows.getString("scheduled_at")))
+                            .append("<details><summary>Cancel pickup</summary><form method='post' action='")
+                            .append(PATH).append("'>")
+                            .append(Login.hidden("csrf", csrf)).append(Login.hidden("action", "cancel"))
+                            .append(Login.hidden("pickup", Integer.toString(id)))
+                            .append("<button>Confirm cancellation</button></form></details></li>");
+                }
+            }
+        }
+        return page.append("</ul>").toString();
+    }
+
+    private static void cancel(Connection db, int userId, int pickupId) throws SQLException {
+        db.setAutoCommit(false);
+        try {
+            var pickup = DistributionStore.pickup(db, pickupId, true);
+            var recipient = findRecipient(db, userId, false);
+            if (recipient == null || recipient.id() != pickup.recipientId()
+                    || !"Scheduled".equals(pickup.requestStatus()) || !"Pending".equals(pickup.status())
+                    || !pickup.scheduled().isAfter(LocalDateTime.now())) {
+                throw new Login.FormError("Choose one of your upcoming pending pickups.");
+            }
+            Login.update(db, "UPDATE pickups SET status = 'Cancelled' WHERE pickup_id = ?", pickupId);
+            Login.update(db, "UPDATE hamper_requests SET status = 'Cancelled' WHERE request_id = ?",
+                    pickup.requestId());
+            db.commit();
+        } catch (SQLException | RuntimeException error) {
+            Login.rollback(db, error);
+            throw error;
         }
     }
 

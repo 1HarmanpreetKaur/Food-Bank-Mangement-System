@@ -1,3 +1,5 @@
+import javax.net.ssl.SSLSocket;
+import javax.net.ssl.SSLSocketFactory;
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.IOException;
@@ -17,7 +19,12 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
 final class EmailService {
-    private static final String SENDER = "alerts@foodbank.test";
+    private static final String DEMO_SENDER = "alerts@foodbank.test";
+    private static final String GMAIL_HOST = "smtp.gmail.com";
+
+    private static boolean gmailMode() {
+        return "gmail".equalsIgnoreCase(System.getenv("FOOD_BANK_EMAIL_MODE"));
+    }
 
     static void start() {
         var scheduler = Executors.newSingleThreadScheduledExecutor(task -> {
@@ -87,6 +94,9 @@ final class EmailService {
                         System.err.println("Alert #" + id + " has an unsupported email address.");
                         return;
                     }
+                    if (gmailMode() && mailboxPort(address, true) != 1025) {
+                        return;
+                    }
                     sendAlertEmail(id, address, rows.getString("alert_type"), rows.getString("message"));
                     Login.update(db, """
                             INSERT INTO alert_email_deliveries (alert_id, recipient_email) VALUES (?, ?)
@@ -96,39 +106,73 @@ final class EmailService {
         }
     }
 
-    // Local SMTP only. Mailpit captures the message for the coursework demo.
     static void sendAlertEmail(int id, String address, String subject, String body) throws IOException {
-        int port = mailboxPort(address, "1".equals(System.getenv("FOOD_BANK_SEPARATE_MAILBOXES")));
-        if (port == 0) {
-            throw new IOException("No separate Mailpit inbox is configured for " + address);
+        boolean gmail = gmailMode();
+        String sender = gmail ? System.getenv().getOrDefault("FOOD_BANK_GMAIL_USER", "").strip() : DEMO_SENDER;
+        String password = gmail ? System.getenv().getOrDefault("FOOD_BANK_GMAIL_APP_PASSWORD", "")
+                .replace(" ", "") : "";
+        if (gmail && (!sender.matches("[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9.-]+")
+                || !password.matches("[A-Za-z0-9]{16}"))) {
+            throw new IOException("Set FOOD_BANK_GMAIL_USER and a 16-character Gmail app password.");
         }
+
         String encodedBody = Base64.getMimeEncoder().encodeToString(body.getBytes(StandardCharsets.UTF_8));
         try (Socket socket = new Socket()) {
-            socket.connect(new InetSocketAddress("127.0.0.1", port), 3000);
-            socket.setSoTimeout(3000);
-            var input = new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.US_ASCII));
-            var output = new BufferedWriter(new OutputStreamWriter(socket.getOutputStream(), StandardCharsets.US_ASCII));
-
-            expect(input, 220);
-            command(output, "EHLO foodbank.test");
-            expect(input, 250);
-            command(output, "MAIL FROM:<" + SENDER + ">");
-            expect(input, 250);
-            command(output, "RCPT TO:<" + address + ">");
-            expect(input, 250);
-            command(output, "DATA");
-            expect(input, 354);
-            command(output, "From: " + SENDER + "\r\n"
-                    + "To: " + address + "\r\n"
-                    + "Subject: Food Bank - " + subject + "\r\n"
-                    + "Date: " + DateTimeFormatter.RFC_1123_DATE_TIME.format(ZonedDateTime.now()) + "\r\n"
-                    + "Message-ID: <foodbank-alert-" + id + "@foodbank.test>\r\n"
-                    + "MIME-Version: 1.0\r\n"
-                    + "Content-Type: text/plain; charset=UTF-8\r\n"
-                    + "Content-Transfer-Encoding: base64\r\n\r\n"
-                    + encodedBody + "\r\n.");
-            expect(input, 250);
+            if (gmail) {
+                socket.connect(new InetSocketAddress(GMAIL_HOST, 465), 5000);
+            } else {
+                int port = mailboxPort(address, "1".equals(System.getenv("FOOD_BANK_SEPARATE_MAILBOXES")));
+                socket.connect(new InetSocketAddress("127.0.0.1", port), 3000);
+            }
+            socket.setSoTimeout(gmail ? 10000 : 3000);
+            if (gmail) {
+                var factory = (SSLSocketFactory) SSLSocketFactory.getDefault();
+                try (var secured = (SSLSocket) factory.createSocket(socket, GMAIL_HOST, 465, true)) {
+                    var parameters = secured.getSSLParameters();
+                    parameters.setEndpointIdentificationAlgorithm("HTTPS");
+                    secured.setSSLParameters(parameters);
+                    secured.setSoTimeout(10000);
+                    secured.startHandshake();
+                    sendMessage(secured, id, sender, password, address, subject, encodedBody);
+                }
+            } else {
+                sendMessage(socket, id, sender, null, address, subject, encodedBody);
+            }
         }
+    }
+
+    private static void sendMessage(Socket socket, int id, String sender, String password, String address,
+                                    String subject, String encodedBody) throws IOException {
+        var input = new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.US_ASCII));
+        var output = new BufferedWriter(new OutputStreamWriter(socket.getOutputStream(), StandardCharsets.US_ASCII));
+
+        expect(input, 220);
+        command(output, "EHLO foodbank.test");
+        expect(input, 250);
+        if (password != null) {
+            command(output, "AUTH LOGIN");
+            expect(input, 334);
+            command(output, Base64.getEncoder().encodeToString(sender.getBytes(StandardCharsets.UTF_8)));
+            expect(input, 334);
+            command(output, Base64.getEncoder().encodeToString(password.getBytes(StandardCharsets.UTF_8)));
+            expect(input, 235);
+        }
+        command(output, "MAIL FROM:<" + sender + ">");
+        expect(input, 250);
+        command(output, "RCPT TO:<" + address + ">");
+        expect(input, 250);
+        command(output, "DATA");
+        expect(input, 354);
+        command(output, "From: " + sender + "\r\n"
+                + "To: " + address + "\r\n"
+                + "Subject: Food Bank - " + subject + "\r\n"
+                + "Date: " + DateTimeFormatter.RFC_1123_DATE_TIME.format(ZonedDateTime.now()) + "\r\n"
+                + "Message-ID: <foodbank-alert-" + id + "@foodbank.test>\r\n"
+                + "MIME-Version: 1.0\r\n"
+                + "Content-Type: text/plain; charset=UTF-8\r\n"
+                + "Content-Transfer-Encoding: base64\r\n\r\n"
+                + encodedBody + "\r\n.");
+        expect(input, 250);
     }
 
     static int mailboxPort(String address, boolean separateMailboxes) {
@@ -140,7 +184,7 @@ final class EmailService {
             case "coordinator2@test.com" -> 1027;
             case "volunteer1@test.com" -> 1028;
             case "volunteer2@test.com" -> 1029;
-            default -> 0;
+            default -> 1025;
         };
     }
 
@@ -156,11 +200,12 @@ final class EmailService {
         do {
             line = input.readLine();
             if (line == null || !line.startsWith(code) || line.length() < 4) {
-                throw new IOException("Mailpit SMTP expected " + code + " but received " + line);
+                String responseCode = line != null && line.matches("[0-9]{3}.*") ? line.substring(0, 3) : "no reply";
+                throw new IOException("SMTP expected " + code + " but received " + responseCode);
             }
         } while (line.charAt(3) == '-');
         if (line.charAt(3) != ' ') {
-            throw new IOException("Unexpected Mailpit SMTP response: " + line);
+            throw new IOException("Unexpected SMTP response format.");
         }
     }
 }
