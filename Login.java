@@ -45,7 +45,10 @@ public class Login {
         """;
 
     public static void main(String[] args) throws IOException {
-        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 8080), 0);
+        String renderPort = System.getenv("PORT");
+        String bindHost = renderPort == null ? "127.0.0.1" : "0.0.0.0";
+        int port = renderPort == null ? 8080 : Integer.parseInt(renderPort);
+        HttpServer server = HttpServer.create(new InetSocketAddress(bindHost, port), 0);
         server.createContext("/", Login::handleLogin);
         server.createContext("/dashboard", Login::handleDashboard);
         server.createContext("/logout", Login::handleLogout);
@@ -261,8 +264,9 @@ public class Login {
         String user = System.getenv().getOrDefault("FOOD_BANK_DB_USER", "root");
         String password = System.getenv().getOrDefault("FOOD_BANK_DB_PASSWORD", "");
 
-        return DriverManager.getConnection(
-                "jdbc:mysql://127.0.0.1:3306/food_bank_login_demo", user, password);
+        String url = System.getenv().getOrDefault(
+                "FOOD_BANK_DB_URL", "jdbc:mysql://127.0.0.1:3306/food_bank_login_demo");
+        return DriverManager.getConnection(url, user, password);
     }
 
     private static Account authenticate(String email, String password, String role)
