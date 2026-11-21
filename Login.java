@@ -7,15 +7,14 @@ import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
-import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.sql.Statement;
 import java.time.LocalDate;
 import java.time.LocalTime;
 import java.time.format.DateTimeParseException;
-import java.util.Map;
-import java.sql.SQLException;
 import java.util.HashMap;
 import java.util.Locale;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -398,7 +397,13 @@ public class Login {
                 } else {
                     manageAccount(connection, fields);
                 }
-                redirect(request, path);
+                String successPath = path.equals("/profile")
+                      ? "/profile?saved=1"
+                      : path.equals("/coordinator/recipients")
+                      ? "/coordinator/recipients?saved=1"
+                      : "/coordinator/accounts?saved=1";
+
+                      redirect(request, successPath);
                 return;
             }
 
@@ -407,6 +412,18 @@ public class Login {
                 case "/coordinator/recipients" -> pendingRecipients(connection, csrf);
                 default -> accountManagementPage(request, connection, csrf);
             };
+            String query = request.getRequestURI().getRawQuery();
+
+             if ("saved=1".equals(query)) {
+             String message = path.equals("/profile")
+              ? "Profile updated successfully!"
+               : path.equals("/coordinator/recipients")
+                ? "Recipient decision saved successfully!"
+                : "Account changes saved successfully!";
+
+             page = "<p role='status' class='success-message'>"
+              + message + "</p>" + page;
+}
             send(request, 200, page);
         } catch (FormError error) {
             send(request, 400, "<p>" + escape(error.getMessage()) + "</p>"
