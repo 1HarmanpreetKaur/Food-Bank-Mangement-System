@@ -1,3 +1,5 @@
+import com.mysql.cj.xdevapi.JsonParser;
+import com.mysql.cj.xdevapi.JsonString;
 import javax.net.ssl.SSLSocket;
 import javax.net.ssl.SSLSocketFactory;
 import java.io.BufferedReader;
@@ -7,9 +9,16 @@ import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
 import java.net.InetSocketAddress;
 import java.net.Socket;
+import java.net.URI;
+import java.net.URLEncoder;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
 import java.sql.SQLException;
+import java.time.Duration;
+import java.time.Instant;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
@@ -21,6 +30,16 @@ import java.util.concurrent.TimeUnit;
 final class EmailService {
     private static final String DEMO_SENDER = "alerts@foodbank.test";
     private static final String GMAIL_HOST = "smtp.gmail.com";
+
+    private static final String ADDRESS_PATTERN = "[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9.-]+";
+    private static final HttpClient HTTP = HttpClient.newBuilder()
+            .connectTimeout(Duration.ofSeconds(5)).build();
+    private static String accessToken;
+    private static Instant refreshAt = Instant.EPOCH;
+
+    private static boolean gmailApiMode() {
+        return "gmail-api".equalsIgnoreCase(System.getenv("FOOD_BANK_EMAIL_MODE"));
+    }
 
     private static boolean gmailMode() {
         return "gmail".equalsIgnoreCase(System.getenv("FOOD_BANK_EMAIL_MODE"));
@@ -90,11 +109,11 @@ final class EmailService {
             try (var rows = query.executeQuery()) {
                 if (rows.next()) {
                     String address = rows.getString("email");
-                    if (!address.matches("[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9.-]+")) {
+                    if (!address.matches(ADDRESS_PATTERN)) {
                         System.err.println("Alert #" + id + " has an unsupported email address.");
                         return;
                     }
-                    if (gmailMode() && mailboxPort(address, true) != 1025) {
+                    if ((gmailMode() || gmailApiMode()) && mailboxPort(address, true) != 1025) {
                         return;
                     }
                     sendAlertEmail(id, address, rows.getString("alert_type"), rows.getString("message"));
@@ -107,11 +126,15 @@ final class EmailService {
     }
 
     static void sendAlertEmail(int id, String address, String subject, String body) throws IOException {
+        if (gmailApiMode()) {
+            sendViaGmailApi(id, address, subject, body);
+            return;
+        }
         boolean gmail = gmailMode();
         String sender = gmail ? System.getenv().getOrDefault("FOOD_BANK_GMAIL_USER", "").strip() : DEMO_SENDER;
         String password = gmail ? System.getenv().getOrDefault("FOOD_BANK_GMAIL_APP_PASSWORD", "")
                 .replace(" ", "") : "";
-        if (gmail && (!sender.matches("[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9.-]+")
+        if (gmail && (!sender.matches(ADDRESS_PATTERN)
                 || !password.matches("[A-Za-z0-9]{16}"))) {
             throw new IOException("Set FOOD_BANK_GMAIL_USER and a 16-character Gmail app password.");
         }
@@ -163,7 +186,12 @@ final class EmailService {
         expect(input, 250);
         command(output, "DATA");
         expect(input, 354);
-        command(output, "From: " + sender + "\r\n"
+        command(output, mimeMessage(id, sender, address, subject, encodedBody) + "\r\n.");
+        expect(input, 250);
+    }
+
+    private static String mimeMessage(int id, String sender, String address, String subject, String encodedBody) {
+        return "From: " + sender + "\r\n"
                 + "To: " + address + "\r\n"
                 + "Subject: Food Bank - " + subject + "\r\n"
                 + "Date: " + DateTimeFormatter.RFC_1123_DATE_TIME.format(ZonedDateTime.now()) + "\r\n"
@@ -171,8 +199,83 @@ final class EmailService {
                 + "MIME-Version: 1.0\r\n"
                 + "Content-Type: text/plain; charset=UTF-8\r\n"
                 + "Content-Transfer-Encoding: base64\r\n\r\n"
-                + encodedBody + "\r\n.");
-        expect(input, 250);
+                + encodedBody;
+    }
+
+    private static void sendViaGmailApi(int id, String address, String subject, String body) throws IOException {
+        String sender = setting("FOOD_BANK_GMAIL_USER");
+        if (!sender.matches(ADDRESS_PATTERN) || !address.matches(ADDRESS_PATTERN)) {
+            throw new IOException("Invalid Gmail sender or recipient address.");
+        }
+        String encodedBody = Base64.getMimeEncoder().encodeToString(body.getBytes(StandardCharsets.UTF_8));
+        String message = mimeMessage(id, sender, address, subject, encodedBody) + "\r\n";
+        String raw = Base64.getUrlEncoder().withoutPadding().encodeToString(message.getBytes(StandardCharsets.UTF_8));
+        var request = HttpRequest.newBuilder(URI.create("https://gmail.googleapis.com/gmail/v1/users/me/messages/send"))
+                .timeout(Duration.ofSeconds(15))
+                .header("Authorization", "Bearer " + gmailAccessToken())
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString("{\"raw\":\"" + raw + "\"}"))
+                .build();
+        var response = execute(request);
+        if (response.statusCode() == 401) {
+            synchronized (EmailService.class) {
+                refreshAt = Instant.EPOCH;
+            }
+        }
+        if (response.statusCode() != 200) {
+            throw new IOException("Gmail API send failed (HTTP " + response.statusCode() + ").");
+        }
+    }
+
+    private static synchronized String gmailAccessToken() throws IOException {
+        if (Instant.now().isBefore(refreshAt)) {
+            return accessToken;
+        }
+        String form = "grant_type=refresh_token"
+                + "&client_id=" + encode(setting("FOOD_BANK_GMAIL_CLIENT_ID"))
+                + "&client_secret=" + encode(setting("FOOD_BANK_GMAIL_CLIENT_SECRET"))
+                + "&refresh_token=" + encode(setting("FOOD_BANK_GMAIL_REFRESH_TOKEN"));
+        var request = HttpRequest.newBuilder(URI.create("https://oauth2.googleapis.com/token"))
+                .timeout(Duration.ofSeconds(15))
+                .header("Content-Type", "application/x-www-form-urlencoded")
+                .POST(HttpRequest.BodyPublishers.ofString(form))
+                .build();
+        var response = execute(request);
+        if (response.statusCode() != 200) {
+            throw new IOException("Google OAuth token refresh failed (HTTP " + response.statusCode() + ").");
+        }
+        try {
+            if (JsonParser.parseDoc(response.body()).get("access_token") instanceof JsonString token
+                    && !token.getString().isBlank()) {
+                accessToken = token.getString();
+                refreshAt = Instant.now().plusSeconds(300);
+                return accessToken;
+            }
+        } catch (RuntimeException error) {
+            throw new IOException("Google returned an unreadable OAuth token response.");
+        }
+        throw new IOException("Google did not return an OAuth access token.");
+    }
+
+    private static HttpResponse<String> execute(HttpRequest request) throws IOException {
+        try {
+            return HTTP.send(request, HttpResponse.BodyHandlers.ofString());
+        } catch (InterruptedException error) {
+            Thread.currentThread().interrupt();
+            throw new IOException("Gmail API request was interrupted.");
+        }
+    }
+
+    private static String encode(String value) {
+        return URLEncoder.encode(value, StandardCharsets.UTF_8);
+    }
+
+    private static String setting(String name) throws IOException {
+        String value = System.getenv(name);
+        if (value == null || value.isBlank()) {
+            throw new IOException("Set " + name + " for Gmail API mode.");
+        }
+        return value.strip();
     }
 
     static int mailboxPort(String address, boolean separateMailboxes) {
