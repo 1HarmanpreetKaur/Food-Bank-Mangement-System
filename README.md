@@ -2,22 +2,55 @@
 
 INFO 2413 · Team 6 · Option 1
 
-A local Java web application backed by MySQL. Donors can view their donation history, recipients can request and schedule hamper pickups, volunteers can track inventory and manage assigned distributions, and coordinators can manage operations and view reports.
+A Java web application backed by MySQL. Donors can view their donation history, recipients can request and schedule hamper pickups, volunteers can track inventory and manage assigned distributions, and coordinators can manage operations and view reports.
+
+## Live demo on Render
+
+**[Open the Food Bank Management System](https://food-bank-mangement-system.onrender.com/)**
+
+**First visit:** The first request may take longer while Render starts the app after inactivity. Please wait for the login page to load.
+
+Use the Render site to test actual email delivery and Claude AI report summaries. The deployed app has the integration credentials configured on the server. For this submission, a local clone runs the core workflows, shows in-app alerts, and generates the MySQL report tables. Real inbox delivery and Claude AI summaries are unavailable in the standard local setup.
+
+| Feature | Render demo | Standard local setup |
+|---|---|---|
+| Accounts, donations, inventory, pickups, and distributions | Available | Available after MySQL setup |
+| In-app alerts and report tables | Available | Available |
+| Alert delivery to a real inbox | Available for accounts with real email addresses | Unavailable |
+| Claude AI summary when generating a report | Available | Unavailable |
+
+Use the current Render login details provided by Team 6. The demo accounts in the local setup below are database seed accounts. For any Render account whose email was changed for alert testing, sign in with its updated email and existing password.
+
+### Test email alerts on Render
+
+1. Sign in as a coordinator. From the dashboard, open **Manage user accounts** and select **Edit** beside the coordinator test account.
+2. Replace its demo email with a real email address you can access and save. The email is also the login ID. Use the new email with the same password at the next sign-in. Gmail skips the seeded test addresses. For an expiry alert test, also update the email of the volunteer you will assign.
+3. Trigger a fresh alert using one of the workflows below. Check **View alerts** in the app, then check the receiving inbox and Spam folder. Coordinate changes to shared demo accounts with Team 6.
+4. After testing, please go back to **Manage user accounts → Edit** and restore the coordinator account’s original demo email (for example, `coordinator1@test.com`). Save the change so the next tester can sign in with the demo email and existing password.
+
+| Alert | How to trigger it | Who receives the email |
+|---|---|---|
+| Delayed or missed pickup | Schedule a future pickup as an approved recipient. As coordinator, assign an available volunteer and link the pickup to the shift. As that volunteer, open **Manage pickups and distributions** and mark the pickup **Delayed** or **Missed**. | Coordinators with real email addresses on their accounts |
+| Inventory expiry risk | As a volunteer, record a fresh donation with a near-term expiry date. As coordinator, assign a volunteer to an upcoming distribution pickup or a shift flagged for expiry alerts on or before the expiry date. Use stock expected to remain at expiry and allow up to five minutes for the analyzer to run. | Coordinators and volunteers assigned to relevant upcoming distributions, using the real email addresses on their accounts |
+
+### Test the Claude AI summary on Render
+
+Sign in as a coordinator and open **View reports**. Select **Donation & Distribution Summary** or **Inventory Waste Summary**, choose a year and month or **Full year**, then click **Generate report**. Use a period with data. The page displays the report table and its Claude summary. The setup below generates the tables locally from MySQL.
 
 ## 1. Get the project
 
 These steps are for Windows. Install **Git**, **JDK 17 or later**, **MySQL Server 8.x**, and **MySQL Workbench**. VS Code is optional. The MySQL driver is already in `lib/`. Java serves the complete web app. No Node.js or npm is needed.
 
-In PowerShell, run `git --version`, `java -version`, and `javac -version`. If a command is missing after installation, reopen PowerShell and check that the relevant program is on your Windows PATH. Use the project branch or commit your teammate shares.
+In PowerShell, run `git --version`, `java -version`, and `javac -version`. If a command is missing after installation, reopen PowerShell and check that the relevant program is on your Windows PATH. The commands below check out the reviewed project branch.
 
-Open the folder containing `Login.java` in VS Code. If you need a fresh copy, clone the [team repository](https://github.com/1HarmanpreetKaur/Food-Bank-Mangement-System). For testing, switch to the branch or commit supplied by the team if the latest implementation is still under review.
+Open the folder containing `Login.java` in VS Code. If you need a fresh copy, clone the [team repository](https://github.com/1HarmanpreetKaur/Food-Bank-Mangement-System).
 
 ```powershell
-git clone https://github.com/1HarmanpreetKaur/Food-Bank-Mangement-System.git Food-Bank
+git clone --branch team-setup-and-claude-reports https://github.com/1HarmanpreetKaur/Food-Bank-Mangement-System.git Food-Bank
 cd Food-Bank
 ```
 
-After cloning, switch to the branch your teammate specifies and confirm it with `git status --short --branch`. Run the rest of the commands from the folder containing `Login.java`, `database.sql`, `frontend/`, and `lib/`. The version with Claude reporting also contains `ClaudeReportSummary.java`.
+Run the rest of the commands from the folder containing `Login.java`, `database.sql`, `frontend/`, and `lib/`.
 
 ## 2. Set up MySQL once
 
@@ -33,11 +66,13 @@ For a fresh setup, open each script with **File → Open SQL Script**, then exec
 | 4 | `pickup_alert_email.sql` | Adds email delivery tracking. |
 | 5 | `workflow_history.sql` | Adds per-date waste entries, pickup outcome history, shift alert settings, and dismissed alerts. |
 
-For an existing setup, stop the app and apply any missing setup scripts in order. The new workflow script backfills the waste and pickup history still available in the database. If an older pickup was marked Fulfilled without a distribution, open its assigned pickup and record the actual items if they were handed out. Otherwise correct the pickup status based on what happened. The first visit to an inventory page creates and seeds `inventory_categories`. The application’s MySQL account needs `CREATE` permission for that setup and read and write access to the project tables. The coordinator report queries run inside `ReportPage.java`.
+`reports.sql` is an empty placeholder. Report queries are in `ReportPage.java`.
+
+For an existing setup, stop the app and apply any missing setup scripts in order. The new workflow script backfills the waste and pickup history still available in the database. If an older pickup was marked Fulfilled without a distribution, open its assigned pickup and record the actual items if they were handed out. Otherwise correct the pickup status based on what happened. The first visit to an inventory page creates and seeds `inventory_categories`. The application’s MySQL account needs `CREATE` permission for that setup and read and write access to the project tables.
 
 ## 3. Start the app
 
-Use the demo accounts below to run the core app on your own computer. The startup commands use Gmail mode so the seeded test addresses are skipped. For real email alerts and Claude summaries, use the shared app URL provided by the team.
+Use the demo accounts below to run the core app on your own computer.
 
 In PowerShell, run the following from the project folder. Replace `root` if you use a different local MySQL username. Set the environment variables in the same terminal that launches Java.
 
@@ -75,21 +110,9 @@ Choose the matching role on the login page. These credentials are for the local 
 - **Recipient** · Once approved, request a hamper and schedule a future pickup. View your pickup and distribution history or cancel one of your future pending pickups.
 - **Volunteer** · Record donations and waste, review inventory, view assigned shifts, and update pickups or distributions for assigned recipients.
 - **Coordinator** · Review registrations, manage accounts and categories, assign volunteers, and open **View reports**. Both **Donation & Distribution Summary** and **Inventory Waste Summary** support monthly and full-year periods. Quantities are grouped by category and unit to keep unlike units separate. The pickup report counts a pickup once per delayed or missed outcome in the period of its scheduled date, even if later fulfilled.
-- **Expiry alerts** · Use a fresh inventory batch and an upcoming pickup with one assigned volunteer. The analyzer checks at startup and every five minutes. Check the in-app alert. On the shared app, confirm receipt for the coordinators and assigned volunteer whose profiles use real inboxes. For an upcoming distribution shift without a linked pickup, select the expiry alert checkbox when assigning the shift.
-- **Pickup alerts** · A Pending pickup becomes Delayed at 30 minutes and an unresolved pickup becomes Missed at two hours. Check the coordinator’s Alerts page and, in the shared app, the coordinator’s real inbox. Use fresh records because delivery tracking prevents previously delivered alerts from being sent again on a normal restart.
+- **Alerts** · Volunteers and coordinators can view the alerts sent to their roles. A pending pickup becomes Delayed at 30 minutes, and an unresolved pickup becomes Missed at two hours.
 
-For a quick Gmail test on the shared app, schedule a fresh pickup as an approved recipient, link it to an available volunteer’s shift as coordinator, then open the pickup as that volunteer and mark it **Delayed** before saving a distribution. Verify the coordinator’s Alerts page, inbox, and Spam folder. The Java terminal shows delivery errors, and `alert_email_deliveries` records accepted sends. Pending emails are retried while Java runs.
-
-## 5. Use Gmail alerts and Claude summaries
-
-Open the shared app URL provided by your team to use these integrations. The shared Java process reads the Gmail sender credentials and Claude settings from its environment. Team members use their own app logins and need no Gmail App Password or Claude API key.
-
-- **Gmail alerts** go to the real email addresses saved on the relevant coordinator and volunteer accounts in the shared app. Seeded test addresses are skipped.
-- **Claude summaries** are generated when a coordinator clicks **Generate report**. The report tables come from MySQL and are available on a local copy even when Claude is unconfigured.
-
-A copy started on your computer has its own server and database. It can still show in-app alerts and generate the report tables. To test actual Gmail delivery or a live Claude summary, perform the workflow in the shared app.
-
-## 6. JSON API
+## 5. JSON API
 
 The dashboard loads recent activity from the same Java server. Sign in through the browser first and use the same browser session to open these URLs. The server checks that the account is active and returns records for that user and role.
 
@@ -100,7 +123,7 @@ The dashboard loads recent activity from the same Java server. Sign in through t
 
 The API returns JSON, including `401` when signed out, `404` for an unknown endpoint, `405` for an unsupported method, and `503` when the data is unavailable. Account, inventory, pickup, and report forms continue to use their existing HTML routes. The front end uses the files in `frontend/`, so start Java from the project folder as shown above.
 
-## 7. Contribute and open a pull request
+## 6. Contribute and open a pull request
 
 1. Run `git status --short --branch` to check your current branch, then stage the files you changed. Keep local database credentials, Gmail App Passwords, Claude API keys, exports, and compiled `.class` files out of the commit.
 2. Review `git diff --cached` and run `git diff --cached --check`. Commit and push your feature branch to the team repository or your fork.
@@ -117,5 +140,5 @@ The API returns JSON, including `401` when signed out, `404` for an unknown endp
 | A database table is missing | Check the Workbench output and apply the missing script from Step 2 in order. |
 | Port 8080 already in use | Stop the earlier copy of the Java app before restarting. |
 | Page loads without styles | Start Java from the folder containing `frontend/` and verify that `frontend/styles.css` exists. |
-| Gmail alert remains queued | Check Java’s terminal output. Confirm Gmail mode, the sender email, and the 16-character Google App Password were set in the same PowerShell window before starting Java. |
-| The report appears without a Claude summary | Use the shared app for live Claude summaries. The report tables are also available locally. |
+| Gmail alert remains queued | Run the test on Render. Verify the test account has a real email address, trigger a fresh alert, and check Inbox and Spam. |
+| The report appears without a Claude summary | Generate the report on Render and select a period that has data. |
